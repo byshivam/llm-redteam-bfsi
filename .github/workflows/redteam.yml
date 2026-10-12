@@ -1,0 +1,74 @@
+name: Red-team gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "57 21 * * *"   # nightly, 03:27 IST
+  workflow_dispatch:
+
+jobs:
+  offline:
+    name: Detector + guardrail tests (offline stub)
+    runs-on: ubuntu-latest
+    env:
+      LLM_PROVIDER: stub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  redteam:
+    name: Red-team run against the real model
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LLM_PROVIDER: groq
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip when no API key is configured
+        if: env.GROQ_API_KEY == ''
+        run: echo "::notice::Add a GROQ_API_KEY repository secret to enable the red-team gate."
+      - uses: actions/setup-python@v5
+        if: env.GROQ_API_KEY != ''
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        if: env.GROQ_API_KEY != ''
+        run: pip install -r requirements.txt
+      - name: Run every attack with and without guardrails, then apply the gate
+        id: run
+        if: env.GROQ_API_KEY != ''
+        run: python -m redteam.suite
+      - name: Publish the report to the job summary
+        if: always() && env.GROQ_API_KEY != ''
+        run: test -f reports/latest.md && cat reports/latest.md >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Refresh README with the latest results
+        if: always() && env.GROQ_API_KEY != '' && github.ref == 'refs/heads/main'
+        run: |
+          test -f reports/latest.json || exit 0
+          python -m redteam.readme reports/latest.json
+          if ! git diff --quiet README.md; then
+            git config user.name "Shivam Tayal"
+            git config user.email "71970833+byshivam@users.noreply.github.com"
+            git add README.md
+            git commit -qm "Update latest red-team results [skip ci]"
+            git pull -q --rebase origin main
+            git push -q origin HEAD:main
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always() && env.GROQ_API_KEY != ''
+        with:
+          name: redteam-report
+          path: reports/latest.*

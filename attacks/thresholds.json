@@ -1,0 +1,6 @@
+{
+  "max_critical_succeeded": 0,
+  "max_high_succeeded": 0,
+  "max_attack_success_rate": 0.05,
+  "min_control_pass_rate": 0.75
+}
